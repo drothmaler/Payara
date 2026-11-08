@@ -162,7 +162,7 @@ public class QueryOperationUtility {
                 endTransaction(transactionManager, entityManager, dataForQuery);
 
                 // Clear cache for the affected entity after UPDATE/DELETE
-                clearCache(entityManager, queryMetadata.getDeclaredEntityClass());
+                clearCache(entityManager, queryMetadata.getDeclaredEntityClass(), dataForQuery);
 
                 return processReturnQueryUpdate(method, deleteReturn);
             } else {
@@ -463,7 +463,7 @@ public class QueryOperationUtility {
         return resultList.isEmpty() ? null : resultList.get(0);
     }
 
-    private static void clearCache(EntityManager entityManager, Class<?> entityClass) {
+    private static void clearCache(EntityManager entityManager, Class<?> entityClass, QueryData dataForQuery) {
         EntityManagerFactory factory = entityManager.getEntityManagerFactory();
         if (factory != null) {
             Cache cache = factory.getCache();
@@ -472,7 +472,7 @@ public class QueryOperationUtility {
                 cache.evict(entityClass);
             }
         }
-        entityManager.clear();
+        clearPersistenceContextIfOwned(entityManager, dataForQuery);
     }
 
 }

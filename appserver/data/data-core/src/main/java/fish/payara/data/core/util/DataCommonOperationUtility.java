@@ -482,6 +482,25 @@ public class DataCommonOperationUtility {
         return new DataParameter(limit, sortList);
     }
 
+    /**
+     * Clears the persistence context after a modifying operation, unless it belongs to a
+     * transaction owned by the caller.
+     *
+     * Within a caller's transaction the entity manager is the transaction-scoped persistence
+     * context shared with the caller's own {@code @PersistenceContext} entity managers (see
+     * {@link #resolveEntityManager}). Clearing it would detach every entity the caller has
+     * loaded and silently discard changes the caller makes to them afterwards. Jakarta
+     * Persistence does not require a clear after {@code remove} or a bulk update/delete: the
+     * persistence context is just not synchronized with the result of a bulk operation, as with
+     * a bulk query the caller executes itself. A persistence context the repository created for
+     * its own transaction is not shared, and clearing it is harmless.
+     */
+    public static void clearPersistenceContextIfOwned(EntityManager em, QueryData dataForQuery) {
+        if (!dataForQuery.isUserTransaction()) {
+            em.clear();
+        }
+    }
+
     public static void startTransactionAndJoin(TransactionManager transactionManager,
                                                EntityManager em, QueryData dataForQuery) throws SystemException, NotSupportedException {
         if (dataForQuery.isLifecycleManagedExternally()) {

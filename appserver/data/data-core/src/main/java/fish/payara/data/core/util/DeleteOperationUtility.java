@@ -56,6 +56,7 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.util.logging.Logger;
 
+import static fish.payara.data.core.util.DataCommonOperationUtility.clearPersistenceContextIfOwned;
 import static fish.payara.data.core.util.DataCommonOperationUtility.endTransaction;
 import static fish.payara.data.core.util.DataCommonOperationUtility.startTransactionAndJoin;
 import static fish.payara.data.core.util.FindOperationUtility.getIDParameterName;
@@ -114,7 +115,7 @@ public class DeleteOperationUtility {
         endTransaction(tm, em, dataForQuery);
 
         // Clear cache for the affected entity after DELETE
-        clearCache(em, declaredEntityClass);
+        clearCache(em, declaredEntityClass, dataForQuery);
 
         logger.fine("Rows affected from delete operation: " + rowsAffected);
         return rowsAffected;
@@ -131,7 +132,7 @@ public class DeleteOperationUtility {
                 " is not mapped on the entity " + entityMetadata.getEntityName());
     }
 
-    private static void clearCache(EntityManager entityManager, Class<?> entityClass) {
+    private static void clearCache(EntityManager entityManager, Class<?> entityClass, QueryData dataForQuery) {
         EntityManagerFactory factory = entityManager.getEntityManagerFactory();
         if (factory != null) {
             Cache cache = factory.getCache();
@@ -140,7 +141,7 @@ public class DeleteOperationUtility {
                 cache.evict(entityClass);
             }
         }
-        entityManager.clear();
+        clearPersistenceContextIfOwned(entityManager, dataForQuery);
     }
 
 }

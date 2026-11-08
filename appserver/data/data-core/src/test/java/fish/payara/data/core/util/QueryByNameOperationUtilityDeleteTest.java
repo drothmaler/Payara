@@ -43,7 +43,10 @@ import fish.payara.data.core.cdi.extension.QueryData;
 import fish.payara.data.core.cdi.extension.QueryMetadata;
 import fish.payara.data.core.cdi.extension.QueryType;
 import fish.payara.data.core.querymethod.QueryMethodParser;
+import jakarta.persistence.Cache;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+import jakarta.persistence.Id;
 import jakarta.persistence.Query;
 import jakarta.persistence.metamodel.EntityType;
 import jakarta.persistence.metamodel.Metamodel;
@@ -58,14 +61,17 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
- * Tests that a derived {@code deleteBy...} operation does not lose its removals when the
- * persistence context is shared with a transaction owned by the caller.
+ * Tests that a derived {@code deleteBy...} operation neither loses its removals nor detaches the
+ * caller's entities when the persistence context is shared with a transaction owned by the caller.
  */
 public class QueryByNameOperationUtilityDeleteTest {
 
     public static class Book {
+        @Id
         Long id;
 
         Book(Long id) {
@@ -79,12 +85,16 @@ public class QueryByNameOperationUtilityDeleteTest {
 
     /**
      * Minimal stand-in for a JTA-synchronized persistence context: {@code remove} only queues
-     * the removal, {@code flush} writes it, {@code clear} discards whatever was not flushed.
+     * the removal, {@code flush} writes it, {@code clear} discards whatever was not flushed and
+     * detaches everything else (here: {@link #callerEntity}, loaded by the caller beforehand).
      */
     private static class FakePersistenceContext {
         final List<Object> found;
         final List<Object> pendingRemovals = new ArrayList<>();
         final List<Object> flushedRemovals = new ArrayList<>();
+        final List<Object> evictedIds = new ArrayList<>();
+        final Object callerEntity = new Book(99L);
+        boolean callerEntityManaged = true;
 
         FakePersistenceContext(List<Object> found) {
             this.found = found;
@@ -94,8 +104,17 @@ public class QueryByNameOperationUtilityDeleteTest {
             EntityType<?> entityType = proxy(EntityType.class, (m, a) -> null);
             Metamodel metamodel = proxy(Metamodel.class, (m, a) -> "entity".equals(m.getName()) ? entityType : null);
             Query query = proxy(Query.class, (m, a) -> "getResultList".equals(m.getName()) ? found : null);
+            Cache cache = proxy(Cache.class, (m, a) -> {
+                if ("evict".equals(m.getName()) && a.length == 2) {
+                    evictedIds.add(a[1]);
+                }
+                return null;
+            });
+            EntityManagerFactory factory = proxy(EntityManagerFactory.class,
+                    (m, a) -> "getCache".equals(m.getName()) ? cache : null);
             return proxy(EntityManager.class, (m, a) -> switch (m.getName()) {
                 case "getMetamodel" -> metamodel;
+                case "getEntityManagerFactory" -> factory;
                 case "createQuery" -> query;
                 case "contains", "isJoinedToTransaction" -> true;
                 case "remove" -> {
@@ -109,6 +128,7 @@ public class QueryByNameOperationUtilityDeleteTest {
                 }
                 case "clear" -> {
                     pendingRemovals.clear();
+                    callerEntityManaged = false;
                     yield null;
                 }
                 default -> null;
@@ -164,5 +184,29 @@ public class QueryByNameOperationUtilityDeleteTest {
 
         assertEquals(2, pc.flushedRemovals.size());
         assertEquals(2L, result);
+    }
+
+    @Test
+    public void derivedDeleteInCallerTransactionKeepsCallerEntitiesManaged() throws Exception {
+        FakePersistenceContext pc = new FakePersistenceContext(List.of(new Book(1L), new Book(2L)));
+
+        QueryByNameOperationUtility.processDeleteByNameOperation(
+                new Object[]{"Alpha"}, queryData(true), pc.entityManager(), activeTransaction());
+
+        assertTrue("the persistence context shared with the caller must not be cleared",
+                pc.callerEntityManaged);
+        assertEquals("the deleted instances must still be evicted from the second-level cache",
+                List.of(1L, 2L), pc.evictedIds);
+    }
+
+    @Test
+    public void derivedDeleteInOwnTransactionClearsOwnPersistenceContext() throws Exception {
+        FakePersistenceContext pc = new FakePersistenceContext(List.of(new Book(1L), new Book(2L)));
+
+        QueryByNameOperationUtility.processDeleteByNameOperation(
+                new Object[]{"Alpha"}, queryData(false), pc.entityManager(), activeTransaction());
+
+        assertFalse(pc.callerEntityManaged);
+        assertEquals(List.of(1L, 2L), pc.evictedIds);
     }
 }

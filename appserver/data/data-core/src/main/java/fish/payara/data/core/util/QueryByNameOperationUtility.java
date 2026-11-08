@@ -73,6 +73,7 @@ import java.util.StringJoiner;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static fish.payara.data.core.util.DataCommonOperationUtility.clearPersistenceContextIfOwned;
 import static fish.payara.data.core.util.DataCommonOperationUtility.endTransaction;
 import static fish.payara.data.core.util.DataCommonOperationUtility.extractDataParameter;
 import static fish.payara.data.core.util.DataCommonOperationUtility.paginationPredicate;
@@ -127,7 +128,7 @@ public class QueryByNameOperationUtility {
             endTransaction(transactionManager, entityManager, dataForQuery);
 
             // Evict specific instances from cache instead of all instances of the entity type
-            clearCache(entityManager, queryMetadata.getDeclaredEntityClass(), entitiesToDelete);
+            clearCache(entityManager, queryMetadata.getDeclaredEntityClass(), entitiesToDelete, dataForQuery);
             return processReturnQueryUpdate(queryMetadata.getMethod(), entitiesToDelete.size());
 
         } catch (OptimisticLockException ole) {
@@ -158,9 +159,10 @@ public class QueryByNameOperationUtility {
      * More efficient for large datasets as it only evicts the entities that were actually modified.
      * Falls back to type-level eviction if IDs cannot be extracted.
      */
-    private static void clearCache(EntityManager entityManager, Class<?> entityClass, List<?> entities) {
-        // In a transaction owned by the caller, endTransaction leaves the removals unflushed and the
-        // persistence context is shared with the caller: flush them, or clear() below would discard them.
+    private static void clearCache(EntityManager entityManager, Class<?> entityClass, List<?> entities,
+                                   QueryData dataForQuery) {
+        // In a transaction owned by the caller, endTransaction leaves the removals unflushed: flush them
+        // here, so that the deletes are written (and failures surface) as part of this call.
         if (entityManager.isJoinedToTransaction()) {
             entityManager.flush();
         }
@@ -169,7 +171,7 @@ public class QueryByNameOperationUtility {
 
         Cache cache;
         if (factory == null || (cache = factory.getCache()) == null) {
-            entityManager.clear();
+            clearPersistenceContextIfOwned(entityManager, dataForQuery);
             return;
         }
 
@@ -186,7 +188,7 @@ public class QueryByNameOperationUtility {
         if (evicted == 0 && !entities.isEmpty()) {
             cache.evict(entityClass);
         }
-        entityManager.clear();
+        clearPersistenceContextIfOwned(entityManager, dataForQuery);
     }
 
     /**
