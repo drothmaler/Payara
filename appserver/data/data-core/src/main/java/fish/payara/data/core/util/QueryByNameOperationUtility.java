@@ -518,7 +518,7 @@ public class QueryByNameOperationUtility {
         return currentAlias + "." + parts[parts.length - 1];
     }
 
-    private static void setQueryParameters(jakarta.persistence.Query q, List<QueryMethodParser.Condition> conditions, Object[] args, QueryMetadata dataForQuery) {
+    static void setQueryParameters(jakarta.persistence.Query q, List<QueryMethodParser.Condition> conditions, Object[] args, QueryMetadata dataForQuery) {
         List<Object> queryArgs = getQueryArguments(args);
         int argIndex = 0;
         int paramIndex = 0;
@@ -534,9 +534,10 @@ public class QueryByNameOperationUtility {
                 processedArg = processedArg + "%";
             } else if ("EndsWith".equals(condition.operator())) {
                 processedArg = "%" + processedArg;
-            } else if ("Contains".equals(condition.operator()) || "Like".equals(condition.operator())) {
+            } else if ("Contains".equals(condition.operator())) {
                 processedArg = "%" + processedArg + "%";
             }
+            // Like binds the pattern written by the caller, without added wildcards
 
             q.setParameter(++paramIndex, processedArg);
             argIndex++;
