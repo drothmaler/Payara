@@ -41,9 +41,18 @@ package fish.payara.data.core.cdi.extension;
 
 import fish.payara.data.core.querymethod.QueryMethodParser;
 import fish.payara.data.core.querymethod.QueryMethodSyntaxException;
+import jakarta.data.repository.Delete;
+import jakarta.data.repository.Query;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.ManyToOne;
 import org.junit.Test;
 
+import java.lang.reflect.Method;
+import java.util.List;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 /**
  * Unit tests for the deploy-time "query by method name" classification performed in
@@ -106,5 +115,78 @@ public class DynamicInterfaceDataProducerTest {
     private static QueryType classify(String methodName) throws QueryMethodSyntaxException {
         QueryMethodParser.ParseResult parseResult = new QueryMethodParser(methodName).parse();
         return DynamicInterfaceDataProducer.queryTypeForByNameAction(parseResult.action());
+    }
+
+    // --- Entity type declared by a method vs. the repository's primary entity ---
+
+    @Test
+    public void countByWithEntityParameterUsesPrimaryEntity() throws NoSuchMethodException {
+        assertNull(resolve("countByAuthor", QueryType.COUNT_BY_NAME, Book.class, Author.class));
+    }
+
+    @Test
+    public void deleteByWithEntityParameterUsesPrimaryEntity() throws NoSuchMethodException {
+        assertNull(resolve("deleteByAuthor", QueryType.DELETE_BY_NAME, Book.class, Author.class));
+    }
+
+    @Test
+    public void existsByWithEntityParameterUsesPrimaryEntity() throws NoSuchMethodException {
+        assertNull(resolve("existsByAuthor", QueryType.EXISTS_BY_NAME, Book.class, Author.class));
+    }
+
+    @Test
+    public void queryWithEntityParameterIsNotResolvedFromParameter() throws NoSuchMethodException {
+        assertNull(resolve("countBooksOf", QueryType.QUERY, Book.class, Author.class));
+    }
+
+    @Test
+    public void findByWithEntityParameterUsesReturnType() throws NoSuchMethodException {
+        assertEquals(Book.class, resolve("findByAuthor", QueryType.FIND_BY_NAME, Book.class, Author.class));
+    }
+
+    @Test
+    public void lifecycleDeleteUsesEntityParameter() throws NoSuchMethodException {
+        assertEquals(Author.class, resolve("remove", QueryType.DELETE, Book.class, Author.class));
+    }
+
+    @Test
+    public void entityParameterIsUsedWithoutPrimaryEntity() throws NoSuchMethodException {
+        assertEquals(Author.class, resolve("countByAuthor", QueryType.COUNT_BY_NAME, null, Author.class));
+    }
+
+    private static Class<?> resolve(String methodName, QueryType queryType, Class<?> primaryEntityClass,
+                                    Class<?>... parameterTypes) throws NoSuchMethodException {
+        Method method = BookRepository.class.getMethod(methodName, parameterTypes);
+        return DynamicInterfaceDataProducer.resolveEntityTypeInMethod(method, queryType, primaryEntityClass);
+    }
+
+    @Entity
+    public static class Author {
+        @Id
+        public Long id;
+    }
+
+    @Entity
+    public static class Book {
+        @Id
+        public Long id;
+        @ManyToOne
+        public Author author;
+    }
+
+    public interface BookRepository {
+        long countByAuthor(Author author);
+
+        void deleteByAuthor(Author author);
+
+        boolean existsByAuthor(Author author);
+
+        List<Book> findByAuthor(Author author);
+
+        @Query("SELECT COUNT(b) FROM Book b WHERE b.author = ?1")
+        long countBooksOf(Author author);
+
+        @Delete
+        void remove(Author author);
     }
 }

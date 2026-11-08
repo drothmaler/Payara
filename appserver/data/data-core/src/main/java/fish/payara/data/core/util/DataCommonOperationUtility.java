@@ -284,6 +284,18 @@ public class DataCommonOperationUtility {
     }
 
     public static Class<?> findEntityTypeInMethod(Method method) {
+        Class<?> entityType = findEntityTypeInReturnType(method);
+        return entityType != null ? entityType : findEntityTypeInParameters(method);
+    }
+
+    /**
+     * Finds the entity type carried by the return type of the method, either directly or as the
+     * element type of an array, {@link Iterable}, {@link Stream}, {@link Optional} or {@link Page}.
+     *
+     * @param method the repository method
+     * @return the entity class, or null if the return type does not carry an entity
+     */
+    public static Class<?> findEntityTypeInReturnType(Method method) {
         Class<?> returnType = method.getReturnType();
         if (!void.class.equals(returnType) && !Void.class.equals(returnType)) {
             if (Iterable.class.isAssignableFrom(returnType)
@@ -303,6 +315,17 @@ public class DataCommonOperationUtility {
                 return evaluateReturnEntity(returnType);
             }
         }
+        return null;
+    }
+
+    /**
+     * Finds the entity type from the first non-basic parameter of the method, either directly or as the
+     * element type of an array, {@link Iterable} or {@link Stream}.
+     *
+     * @param method the repository method
+     * @return the entity class, or null if no parameter identifies an entity
+     */
+    public static Class<?> findEntityTypeInParameters(Method method) {
         for (Parameter param : method.getParameters()) {
             Class<?> paramType = param.getType();
             if (!paramType.isPrimitive() && !paramType.equals(String.class)) {

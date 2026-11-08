@@ -80,6 +80,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static fish.payara.data.core.util.DataCommonOperationUtility.findEntityTypeInMethod;
+import static fish.payara.data.core.util.DataCommonOperationUtility.findEntityTypeInReturnType;
 import static fish.payara.data.core.util.DataCommonOperationUtility.getEntityManagerSupplier;
 import static fish.payara.data.core.util.DataCommonOperationUtility.preprocesEntityMetadata;
 
@@ -349,7 +350,7 @@ public class DynamicInterfaceDataProducer<T> implements Producer<T>, ProducerFac
                 queryType = queryTypeForByNameAction(parseResult.action());
             }
 
-            Class<?> entityTypeInMethod = findEntityTypeInMethod(method);
+            Class<?> entityTypeInMethod = resolveEntityTypeInMethod(method, queryType, declaredEntityClass);
             if (entityTypeInMethod != null) {
                 declaredEntityClass = entityTypeInMethod;
             } else if (queryType == QueryType.QUERY) {
@@ -379,6 +380,28 @@ public class DynamicInterfaceDataProducer<T> implements Producer<T>, ProducerFac
         } catch (MappingException | QueryMethodSyntaxException e) {
             logger.warning(e.getMessage());
         }
+    }
+
+    /**
+     * Resolves the entity type that a repository method itself declares. An entity in the return type
+     * always identifies the entity. The parameter types only identify it for lifecycle methods
+     * ({@code @Insert}, {@code @Save}, {@code @Update}, {@code @Delete}) or when the repository has no
+     * primary entity type. For any other method, such as {@code long countByAuthor(Author author)} or
+     * {@code void deleteByAuthor(Author author)}, an entity-typed parameter is a query restriction on the
+     * primary entity, not the entity to query.
+     *
+     * @param method the repository method
+     * @param queryType the query type of the method
+     * @param primaryEntityClass the primary entity type of the repository, or null if it has none
+     * @return the entity class declared by the method, or null if the method does not declare one
+     */
+    static Class<?> resolveEntityTypeInMethod(Method method, QueryType queryType, Class<?> primaryEntityClass) {
+        boolean lifecycleMethod = queryType == QueryType.INSERT || queryType == QueryType.SAVE
+                || queryType == QueryType.UPDATE || queryType == QueryType.DELETE;
+        if (lifecycleMethod || primaryEntityClass == null) {
+            return findEntityTypeInMethod(method);
+        }
+        return findEntityTypeInReturnType(method);
     }
 
     /**
