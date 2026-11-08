@@ -1,7 +1,7 @@
 /*
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
  *
- *    Copyright (c) [2025] Payara Foundation and/or its affiliates. All rights reserved.
+ *    Copyright (c) [2025-2026] Payara Foundation and/or its affiliates. All rights reserved.
  *
  *     The contents of this file are subject to the terms of either the GNU
  *     General Public License Version 2 only ("GPL") or the Common Development
@@ -63,6 +63,9 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static fish.payara.data.core.util.DataCommonOperationUtility.handleSort;
@@ -73,6 +76,16 @@ import static fish.payara.data.core.util.DataCommonOperationUtility.handleSort;
 public class FindOperationUtility {
 
     public static final List<Class<?>> parametersToExclude = List.of(PageRequest.class, Limit.class, Order.class, Sort.class, Sort[].class);
+
+    private static final Pattern FROM_CLAUSE_PATTERN = Pattern.compile(
+            "\\bFROM\\s+(.+?)(?=\\s+(?:WHERE|GROUP\\s+BY|HAVING|ORDER\\s+BY)\\b|$)",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern ROOT_ALIAS_PATTERN = Pattern.compile(
+            "^\\s*[\\w$.]+\\s+(?:AS\\s+)?([A-Za-z_$][\\w$]*)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern JOIN_FETCH_PATTERN = Pattern.compile("\\bJOIN\\s+FETCH\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELECT_DISTINCT_PATTERN = Pattern.compile("^\\s*SELECT\\s+DISTINCT\\b", Pattern.CASE_INSENSITIVE);
+    private static final Set<String> FROM_CLAUSE_KEYWORDS = Set.of("JOIN", "LEFT", "INNER", "OUTER", "FETCH",
+            "WHERE", "GROUP", "HAVING", "ORDER");
 
     public static Object processFindAllOperation(Class<?> entityClass, EntityManager em, String orderByClause,
                                                  QueryData dataForQuery, DataParameter dataParameter) {
@@ -291,8 +304,10 @@ public class FindOperationUtility {
                 dataForQuery.getQueryString().indexOf("WHERE"), dataForQuery.getQueryString().indexOf("ORDER"));
         List<Sort<?>> sortList = dataParameter.sortList();
         pageRequest = getPageRequest(args);
+        String rootAlias = dataForQuery.getQueryMetadata().getQueryType() == QueryType.QUERY
+                ? getRootAlias(dataForQuery.getQueryString()) : null;
 
-        createQueriesForPagination(pageRequest, method, dataForQuery, builder, args, sortList, null);
+        createQueriesForPagination(pageRequest, method, dataForQuery, builder, args, sortList, rootAlias);
 
         if (Page.class.equals(method.getReturnType())) {
             returnValue = new PageImpl<>(dataForQuery, args, pageRequest, em);
@@ -366,8 +381,19 @@ public class FindOperationUtility {
             builder.append("SELECT COUNT(").append("o").append(") FROM ")
                     .append(getSingleEntityName(queryMetadata.getDeclaredEntityClass().getName())).append(" o");
         } else if (queryMetadata.getQueryType().equals(QueryType.QUERY)) {
-            builder.append("SELECT COUNT(").append("this").append(") FROM ")
-                    .append(getSingleEntityName(queryMetadata.getDeclaredEntityClass().getName()));
+            String queryString = dataForQuery.getQueryString();
+            String fromClause = getFromClause(queryString);
+            String rootAlias = getRootAlias(queryString);
+            if (rootAlias != null) {
+                // keep the whole FROM clause (alias and joins) of the @Query, fetch joins are not allowed for COUNT
+                builder.append("SELECT COUNT(")
+                        .append(SELECT_DISTINCT_PATTERN.matcher(queryString).find() ? "DISTINCT " : "")
+                        .append(rootAlias).append(") FROM ")
+                        .append(JOIN_FETCH_PATTERN.matcher(fromClause).replaceAll("JOIN"));
+            } else {
+                builder.append("SELECT COUNT(").append("this").append(") FROM ")
+                        .append(getSingleEntityName(queryMetadata.getDeclaredEntityClass().getName()));
+            }
         }
 
         if (hasWhere && queryMetadata.getQueryType().equals(QueryType.FIND)) {
@@ -382,6 +408,38 @@ public class FindOperationUtility {
             builder.append(" WHERE ").append(dataForQuery.getQueryString().substring(wherePosition + 5, orderPosition));
         }
         dataForQuery.setCountQueryString(builder.toString());
+    }
+
+    /**
+     * Returns the FROM clause of the given query (the text between the first FROM keyword and the following
+     * WHERE, GROUP BY, HAVING or ORDER BY keyword or the end of the query), or null if the query has no FROM clause.
+     */
+    public static String getFromClause(String query) {
+        if (query == null) {
+            return null;
+        }
+        Matcher matcher = FROM_CLAUSE_PATTERN.matcher(query);
+        return matcher.find() ? matcher.group(1).trim() : null;
+    }
+
+    /**
+     * Returns the identification variable declared for the root entity in the FROM clause of the given query,
+     * for example {@code b} for {@code SELECT b FROM Book b WHERE ...} or {@code FROM Book AS b}, or null if the
+     * root entity has no identification variable (JDQL like {@code FROM Book WHERE ...}).
+     */
+    public static String getRootAlias(String query) {
+        String fromClause = getFromClause(query);
+        if (fromClause == null) {
+            return null;
+        }
+        Matcher matcher = ROOT_ALIAS_PATTERN.matcher(fromClause);
+        if (matcher.find()) {
+            String alias = matcher.group(1);
+            if (!FROM_CLAUSE_KEYWORDS.contains(alias.toUpperCase())) {
+                return alias;
+            }
+        }
+        return null;
     }
 
     public static boolean excludeParameter(Object arg) {

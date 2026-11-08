@@ -434,16 +434,15 @@ public class DataCommonOperationUtility {
 
             boolean isFunctionExpr = propertyName.charAt(propertyName.length() - 1) == ')';
 
+            if (sort.ignoreCase()) {
+                sortCriteria.append("LOWER(");
+            }
             if (!isFunctionExpr) {
                 if (isFindOperation) {
                     sortCriteria.append("o.");
                 } else if (rootAlias != null && !rootAlias.isEmpty()) {
                     sortCriteria.append(rootAlias).append(".");
                 }
-            }
-
-            if (sort.ignoreCase()) {
-                sortCriteria.append("LOWER(");
             }
             sortCriteria.append(propertyName);
             if (sort.ignoreCase()) {

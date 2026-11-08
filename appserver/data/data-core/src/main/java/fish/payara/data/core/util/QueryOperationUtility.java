@@ -76,6 +76,7 @@ import static fish.payara.data.core.util.DataCommonOperationUtility.*;
 import static fish.payara.data.core.util.FindOperationUtility.excludeParameter;
 import static fish.payara.data.core.util.FindOperationUtility.getSingleEntityName;
 import static fish.payara.data.core.util.FindOperationUtility.parametersToExclude;
+import static fish.payara.data.core.util.FindOperationUtility.getRootAlias;
 import static fish.payara.data.core.util.FindOperationUtility.processPagination;
 
 /**
@@ -134,7 +135,9 @@ public class QueryOperationUtility {
             String query = queryMappingEntry.getKey();
             List<Sort<?>> sortList = dataParameter.sortList();
             if (!sortList.isEmpty()) {
-                query = handleSort(dataForQuery, sortList, query, false, false, false);
+                StringBuilder sortedQuery = new StringBuilder(query);
+                handleSort(dataForQuery, sortList, sortedQuery, false, false, false, getRootAlias(query));
+                query = sortedQuery.toString();
             }
             jakarta.persistence.Query q = entityManager.createQuery(query);
             validateParameters(dataForQuery, queryMappingEntry.getValue(), queryAnnotation.value());
