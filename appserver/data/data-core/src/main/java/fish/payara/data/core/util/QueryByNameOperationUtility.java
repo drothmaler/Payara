@@ -396,10 +396,12 @@ public class QueryByNameOperationUtility {
         createQueriesForPagination(pageRequest, queryMetadata.getMethod(), dataForQuery,
                 new StringBuilder(dataForQuery.getQueryString()), args, dataForQuery.getOrders(), rootAlias);
 
+        // the page implementations bind the arguments as given, so apply the LIKE wildcards and IgnoreCase here
+        Object[] queryArgs = processArgumentsForPagination(parseResult.conditions(), args);
         if (Page.class.equals(queryMetadata.getMethod().getReturnType())) {
-            returnValue = new PageImpl<>(dataForQuery, args, pageRequest, entityManager);
+            returnValue = new PageImpl<>(dataForQuery, queryArgs, pageRequest, entityManager);
         } else {
-            returnValue = new CursoredPageImpl<>(dataForQuery, args, pageRequest, entityManager);
+            returnValue = new CursoredPageImpl<>(dataForQuery, queryArgs, pageRequest, entityManager);
         }
 
         return returnValue;
@@ -527,27 +529,64 @@ public class QueryByNameOperationUtility {
                 continue;
             }
 
-            Object arg = queryArgs.get(argIndex);
-            Object processedArg = condition.ignoreCase() && arg instanceof String ? ((String) arg).toLowerCase() : arg;
-
-            if ("StartsWith".equals(condition.operator())) {
-                processedArg = processedArg + "%";
-            } else if ("EndsWith".equals(condition.operator())) {
-                processedArg = "%" + processedArg;
-            } else if ("Contains".equals(condition.operator()) || "Like".equals(condition.operator())) {
-                processedArg = "%" + processedArg + "%";
-            }
-
-            q.setParameter(++paramIndex, processedArg);
+            q.setParameter(++paramIndex, processArgument(condition, queryArgs.get(argIndex), true));
             argIndex++;
 
             if ("Between".equals(condition.operator())) {
-                Object arg2 = queryArgs.get(argIndex);
-                Object processedArg2 = condition.ignoreCase() && arg2 instanceof String ? ((String) arg2).toLowerCase() : arg2;
-                q.setParameter(++paramIndex, processedArg2);
+                q.setParameter(++paramIndex, processArgument(condition, queryArgs.get(argIndex), true));
                 argIndex++;
             }
         }
+    }
+
+    /**
+     * Applies {@link #processArgument} to the query arguments of a paginated query method. The page implementations
+     * bind each argument that is not excluded (PageRequest, Order, Sort, ...) to the parameter with its position, so
+     * the arguments keep their positions and only their values are replaced. A {@code Like} argument is a pattern
+     * written by the caller and is bound without added wildcards.
+     */
+    static Object[] processArgumentsForPagination(List<QueryMethodParser.Condition> conditions, Object[] args) {
+        if (args == null) {
+            return null;
+        }
+        Object[] processedArgs = args.clone();
+        int argIndex = 0;
+        for (QueryMethodParser.Condition condition : conditions) {
+            if (condition.operator() != null && (condition.operator().equals("Null") || condition.operator().equals("True") || condition.operator().equals("False"))) {
+                continue;
+            }
+            int valueCount = "Between".equals(condition.operator()) ? 2 : 1;
+            for (int i = 0; i < valueCount; i++) {
+                while (argIndex < args.length && excludeParameter(args[argIndex])) {
+                    argIndex++;
+                }
+                if (argIndex >= args.length) {
+                    return processedArgs;
+                }
+                if (args[argIndex] != null) {
+                    processedArgs[argIndex] = processArgument(condition, args[argIndex], false);
+                }
+                argIndex++;
+            }
+        }
+        return processedArgs;
+    }
+
+    /**
+     * Lower-cases the argument for IgnoreCase and adds the wildcards of StartsWith, EndsWith and Contains.
+     * {@code wrapLike} keeps the existing behaviour of the non-paginated path, which also wraps Like in wildcards.
+     */
+    private static Object processArgument(QueryMethodParser.Condition condition, Object arg, boolean wrapLike) {
+        Object processedArg = condition.ignoreCase() && arg instanceof String ? ((String) arg).toLowerCase() : arg;
+
+        if ("StartsWith".equals(condition.operator())) {
+            processedArg = processedArg + "%";
+        } else if ("EndsWith".equals(condition.operator())) {
+            processedArg = "%" + processedArg;
+        } else if ("Contains".equals(condition.operator()) || (wrapLike && "Like".equals(condition.operator()))) {
+            processedArg = "%" + processedArg + "%";
+        }
+        return processedArg;
     }
 
     private static Object executeQuery(jakarta.persistence.Query q, QueryMethodParser.ParseResult parseResult, QueryMetadata dataForQuery) {
