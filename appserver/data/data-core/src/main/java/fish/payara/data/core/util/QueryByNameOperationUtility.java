@@ -348,6 +348,7 @@ public class QueryByNameOperationUtility {
         buildJoins(joinClause, parseResult, rootEntityType, rootAlias, joinAliases);
 
         jpql.append(joinClause);
+        countClause.append(joinClause);
 
         if (!parseResult.conditions().isEmpty()) {
             jpql.append(" WHERE ").append(buildWhereConditions(parseResult.conditions(), rootEntityType, rootAlias, joinAliases, queryMetadata));
@@ -391,7 +392,7 @@ public class QueryByNameOperationUtility {
         dataForQuery.setOrders(finalOrders);
 
         dataForQuery.setQueryString(jpql.toString());
-        dataForQuery.setCountQueryString(jpql.toString());
+        dataForQuery.setCountQueryString(countClause.toString());
 
         createQueriesForPagination(pageRequest, queryMetadata.getMethod(), dataForQuery,
                 new StringBuilder(dataForQuery.getQueryString()), args, dataForQuery.getOrders(), rootAlias);

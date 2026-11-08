@@ -187,7 +187,7 @@ public class PageImpl<T> implements Page<T> {
         }
         List results = queryCount.getResultList();
         if (results.size() == 1) {
-            return (Long) results.get(0);
+            return ((Number) results.get(0)).longValue();
         } else if (results.size() > 1) {
             return results.size();
         } else {
