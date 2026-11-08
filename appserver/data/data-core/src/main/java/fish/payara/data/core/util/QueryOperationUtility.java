@@ -83,9 +83,10 @@ import static fish.payara.data.core.util.FindOperationUtility.processPagination;
  */
 public class QueryOperationUtility {
 
-    private static final List<String> selectQueryPatterns = List.of("SELECT", "FROM", "WHERE", "ORDER", "GROUP", "BY", "HAVING");
-    private static final List<String> deleteQueryPatterns = List.of("DELETE", "FROM", "WHERE");
-    private static final List<String> updateQueryPatterns = List.of("UPDATE", "SET", "WHERE");
+    static final List<String> selectQueryPatterns = List.of("SELECT", "FROM", "WHERE", "ORDER", "GROUP", "BY", "HAVING");
+    static final List<String> deleteQueryPatterns = List.of("DELETE", "FROM", "WHERE");
+    static final List<String> updateQueryPatterns = List.of("UPDATE", "SET", "WHERE");
+    private static final List<String> clauseKeywords = List.of("FROM", "WHERE", "GROUP", "HAVING", "ORDER");
 
     private static final Predicate<Character> deletePredicate = c -> c == 'D' || c == 'd';
     private static final Predicate<Character> updatePredicate = c -> c == 'U' || c == 'u';
@@ -249,7 +250,7 @@ public class QueryOperationUtility {
     public static Map<Integer, String> preprocessQueryString(String queryString, List<String> patterns) {
         Map<Integer, String> patternPositions = new LinkedHashMap<>();
         for (String p : patterns) {
-            int startIndex = queryString.toLowerCase().indexOf(p.toLowerCase());
+            int startIndex = indexOfKeyword(queryString, p);
             if (startIndex != -1) {
                 patternPositions.put(startIndex, p);
             }
@@ -257,18 +258,95 @@ public class QueryOperationUtility {
         return patternPositions;
     }
 
+    /**
+     * Finds the first occurrence of the keyword as a whole word (case-insensitive), ignoring occurrences inside
+     * identifiers (e.g. {@code orderDate}, {@code Orders}), paths ({@code b.from}), named parameters ({@code :from})
+     * and string literals.
+     */
+    static int indexOfKeyword(String query, String keyword) {
+        int length = keyword.length();
+        boolean inLiteral = false;
+        for (int i = 0; i + length <= query.length(); i++) {
+            if (query.charAt(i) == '\'') {
+                inLiteral = !inLiteral;
+            } else if (!inLiteral && query.regionMatches(true, i, keyword, 0, length)
+                    && (i == 0 || !isIdentifierOrPathPart(query.charAt(i - 1)))
+                    && (i + length == query.length() || !Character.isJavaIdentifierPart(query.charAt(i + length)))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isIdentifierOrPathPart(char c) {
+        return Character.isJavaIdentifierPart(c) || c == '.' || c == ':';
+    }
+
+    /**
+     * Returns the index of the first clause keyword (FROM, WHERE, GROUP, HAVING, ORDER) after {@code index},
+     * or the length of the query if there is none.
+     */
+    private static int nextClauseIndex(int index, String query, Map<Integer, String> patternPositions) {
+        int next = query.length();
+        for (Map.Entry<Integer, String> entry : patternPositions.entrySet()) {
+            if (entry.getKey() > index && entry.getKey() < next && clauseKeywords.contains(entry.getValue())) {
+                next = entry.getKey();
+            }
+        }
+        return next;
+    }
+
+    /**
+     * Returns the index after "GROUP BY" / "ORDER BY", allowing any whitespace between both words.
+     */
+    private static int afterBy(int keywordIndex, String query) {
+        int index = keywordIndex + 5;
+        while (index < query.length() && Character.isWhitespace(query.charAt(index))) {
+            index++;
+        }
+        if (query.regionMatches(true, index, "BY", 0, 2)) {
+            return index + 2;
+        }
+        return keywordIndex + 5;
+    }
+
+    /**
+     * Appends the clause keyword followed by the content of the clause, from {@code contentStart} up to the next
+     * clause keyword of the query.
+     */
+    private static void appendClause(StringBuilder queryBuilder, String keyword, String query, int contentStart,
+                                     int clauseIndex, Map<Integer, String> patternPositions) {
+        if (!queryBuilder.isEmpty()) {
+            queryBuilder.append(' ');
+        }
+        queryBuilder.append(keyword).append(' ')
+                .append(query.substring(contentStart, nextClauseIndex(clauseIndex, query, patternPositions)).trim());
+    }
+
+    /**
+     * Adds the implicit "FROM entity" in front of the first clause of a query that has neither SELECT nor FROM,
+     * such as "WHERE ..." or "ORDER BY ...".
+     */
+    private static void appendImplicitFrom(StringBuilder queryBuilder, int clauseIndex, String query,
+                                           Class<?> entityClass, Map<Integer, String> patternPositions) {
+        if (!patternPositions.containsValue("FROM") && !patternPositions.containsValue("SELECT")
+                && !patternPositions.containsValue("UPDATE")
+                && nextClauseIndex(-1, query, patternPositions) == clauseIndex) {
+            if (!queryBuilder.isEmpty()) {
+                queryBuilder.append(' ');
+            }
+            queryBuilder.append("FROM ").append(getSingleEntityName(entityClass.getName()));
+        }
+    }
+
 
     public static void addQueryPart(StringBuilder queryBuilder, String part, String query, Class<?> entityClass, Map<Integer, String> patternPositions) {
         switch (part) {
             case "SELECT" -> {
-                queryBuilder.append("SELECT");
                 int selectIndex = getIndexFromMap("SELECT", patternPositions);
-                if (patternPositions.containsValue("FROM")) {
-                    int fromIndex = getIndexFromMap("FROM", patternPositions);
-                    queryBuilder.append(query.substring(selectIndex + 6, fromIndex));
-                } else if (patternPositions.containsValue("WHERE")) {
-                    int whereIndex = getIndexFromMap("WHERE", patternPositions);
-                    queryBuilder.append(query.substring(selectIndex + 6, whereIndex));
+                appendClause(queryBuilder, "SELECT", query, selectIndex + 6, selectIndex, patternPositions);
+                if (!patternPositions.containsValue("FROM")) {
+                    queryBuilder.append(" FROM ").append(getSingleEntityName(entityClass.getName()));
                 }
             }
             case "DELETE" -> {
@@ -288,19 +366,15 @@ public class QueryOperationUtility {
                 }
             }
             case "FROM" -> {
-                int whereIndex = getIndexFromMap("WHERE", patternPositions);
                 int fromIndex = getIndexFromMap("FROM", patternPositions);
-                if (fromIndex != -1 && whereIndex != -1) {
-                    String entityName = query.substring(fromIndex + 5, whereIndex);
-                    if (!entityName.trim().isEmpty()) {
-                        queryBuilder.append("FROM ").append(entityName);
-                    }
-                } else {
-                    String entityName = getSingleEntityName(entityClass.getName());
-                    if (entityName != null) {
-                        queryBuilder.append("FROM ").append(entityName);
-                    }
+                String fromClause = query.substring(fromIndex + 4, nextClauseIndex(fromIndex, query, patternPositions)).trim();
+                if (fromClause.isEmpty()) {
+                    fromClause = getSingleEntityName(entityClass.getName());
                 }
+                if (!queryBuilder.isEmpty()) {
+                    queryBuilder.append(' ');
+                }
+                queryBuilder.append("FROM ").append(fromClause);
             }
             case "SET" -> {
                 queryBuilder.append(" SET ");
@@ -311,55 +385,24 @@ public class QueryOperationUtility {
                 }
             }
             case "WHERE" -> {
-                if (!patternPositions.containsValue("FROM") && !patternPositions.containsValue("UPDATE")) {
-                    queryBuilder.append(" FROM ").append(getSingleEntityName(entityClass.getName())).append(" WHERE ");
-                } else {
-                    queryBuilder.append(" WHERE ");
-                }
-
-                if (!patternPositions.containsValue("ORDER") && !patternPositions.containsValue("GROUP") && !patternPositions.containsValue("HAVING")) {
-                    int whereIndex = getIndexFromMap("WHERE", patternPositions);
-                    queryBuilder.append(query.substring(whereIndex + 6));
-                }
+                int whereIndex = getIndexFromMap("WHERE", patternPositions);
+                appendImplicitFrom(queryBuilder, whereIndex, query, entityClass, patternPositions);
+                appendClause(queryBuilder, "WHERE", query, whereIndex + 5, whereIndex, patternPositions);
             }
             case "ORDER" -> {
-                int whereIndex = getIndexFromMap("WHERE", patternPositions);
                 int orderIndex = getIndexFromMap("ORDER", patternPositions);
-                int fromIndex = getIndexFromMap("FROM", patternPositions);
-                int selectIndex = getIndexFromMap("SELECT", patternPositions);
-                if (fromIndex != -1 && whereIndex == -1) {
-                    queryBuilder.append(query.substring(fromIndex + 5, orderIndex));
-                } else if (whereIndex != -1) {
-                    queryBuilder.append(query.substring(whereIndex + 6, orderIndex));
-                }
-
-                if (fromIndex == -1 && whereIndex == -1 && selectIndex != -1) {
-                    String entityName = getSingleEntityName(entityClass.getName());
-                    queryBuilder.append(query.substring(selectIndex + 6, orderIndex));
-                    queryBuilder.append(" FROM ").append(entityName);
-                } else if (fromIndex == -1 && whereIndex == -1 && selectIndex == -1) {
-                    String entityName = getSingleEntityName(entityClass.getName());
-                    queryBuilder.append(" FROM ").append(entityName);
-                }
-
-                if (patternPositions.containsValue("BY")) {
-                    queryBuilder.append(" ORDER BY ").append(query.substring(orderIndex + 9));
-                }
+                appendImplicitFrom(queryBuilder, orderIndex, query, entityClass, patternPositions);
+                appendClause(queryBuilder, "ORDER BY", query, afterBy(orderIndex, query), orderIndex, patternPositions);
             }
             case "GROUP" -> {
-                int whereIndex = getIndexFromMap("WHERE", patternPositions);
                 int groupIndex = getIndexFromMap("GROUP", patternPositions);
-                int havingIndex = getIndexFromMap("HAVING", patternPositions);
-                queryBuilder.append(query.substring(whereIndex + 6, groupIndex));
-                if (patternPositions.containsValue("BY") && patternPositions.containsValue("HAVING")) {
-                    queryBuilder.append(" GROUP BY ").append(query.substring(groupIndex + 9, havingIndex));
-                } else {
-                    queryBuilder.append(" GROUP BY ").append(query.substring(groupIndex + 9));
-                }
+                appendImplicitFrom(queryBuilder, groupIndex, query, entityClass, patternPositions);
+                appendClause(queryBuilder, "GROUP BY", query, afterBy(groupIndex, query), groupIndex, patternPositions);
             }
             case "HAVING" -> {
                 int havingIndex = getIndexFromMap("HAVING", patternPositions);
-                queryBuilder.append(" HAVING ").append(query.substring(havingIndex + 6));
+                appendImplicitFrom(queryBuilder, havingIndex, query, entityClass, patternPositions);
+                appendClause(queryBuilder, "HAVING", query, havingIndex + 6, havingIndex, patternPositions);
             }
         }
     }
