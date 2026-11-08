@@ -159,6 +159,12 @@ public class QueryByNameOperationUtility {
      * Falls back to type-level eviction if IDs cannot be extracted.
      */
     private static void clearCache(EntityManager entityManager, Class<?> entityClass, List<?> entities) {
+        // In a transaction owned by the caller, endTransaction leaves the removals unflushed and the
+        // persistence context is shared with the caller: flush them, or clear() below would discard them.
+        if (entityManager.isJoinedToTransaction()) {
+            entityManager.flush();
+        }
+
         EntityManagerFactory factory = entityManager.getEntityManagerFactory();
 
         Cache cache;
